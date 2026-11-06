@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0E4A38">
+<title>溢价日 · 跨境 ETF 溢价监测</title>
+<meta name="description" content="跨境 ETF 溢价率、历史位置与规模流动性监测。数据来自公开行情与基金官方净值。">
+<script>
+/* 构建版本变更时自动整页刷新，避免旧标签页拿着内存里的旧 JS 渲染出不一致的页面 */
+(function () {
+  var BUILD = "20261106q";
+  try {
+    if (localStorage.pmBuild && localStorage.pmBuild !== BUILD) {
+      localStorage.pmBuild = BUILD;
+      location.reload();
+      return;
+    }
+    localStorage.pmBuild = BUILD;
+  } catch (e) { /* 隐私模式下忽略 */ }
+})();
+</script>
+<link rel="stylesheet" href="assets/v-20261106q/app.css">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230E4A38'/%3E%3Ctext x='32' y='45' font-size='36' text-anchor='middle' fill='%23F4E7C8' font-family='sans-serif'%3E溢%3C/text%3E%3C/svg%3E">
+</head>
+<body>
+<div class="ambient"></div>
+
+<header class="appbar">
+  <div class="bar-inner">
+    <a class="brand" href="#/" aria-label="返回首页">
+      <span class="brand-mark">溢</span>
+      <span class="brand-word">溢价日</span>
+      <span class="brand-tag">PREMIUM</span>
+    </a>
+    <div class="bar-actions">
+      <div class="freshness" id="freshness" title="数据更新时间">
+        <span class="pulse"></span><span id="freshnessText">数据加载中</span>
+      </div>
+      <button class="icon-btn" id="btnRefresh" aria-label="刷新数据" title="刷新">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></svg>
+      </button>
+      <button class="ghost-btn" id="btnAbout">数据说明</button>
+    </div>
+  </div>
+</header>
+
+<main class="shell">
+  <!-- 列表视图 -->
+  <section id="view-home" class="view">
+    <section class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow"><span class="spark"></span>跨境 ETF · 溢价监测</p>
+        <h1>溢价日</h1>
+        <p class="hero-sub" id="heroSub">全部指数 · 加载中</p>
+        <div class="hero-status">
+          <span class="status-pill" id="marketStatus">已收盘</span>
+          <span class="hero-date" id="tradeDate"></span>
+        </div>
+      </div>
+      <div class="hero-stats" id="heroStats"></div>
+    </section>
+
+    <section class="access-card">
+      <div class="access-icon">
+        <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="4.5" y="10" width="15" height="10" rx="2.4"/><path d="M8 10V7.5a4 4 0 0 1 8 0V10"/><circle cx="12" cy="15" r="1.3" fill="currentColor" stroke="none"/></svg>
+      </div>
+      <div class="access-copy">
+        <h3>免费权限</h3>
+        <p>可查看当前与参考溢价、基础信息、近一月历史位置与高低点，以及 ETF 对比。</p>
+      </div>
+      <button class="access-cta" id="btnService">
+        <b>联系客服</b><span>微信 CodeTester</span>
+      </button>
+    </section>
+
+    <section class="sync-strip" id="syncStrip" aria-live="polite">
+      <div class="sync-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></svg>
+      </div>
+      <div class="sync-copy">
+        <b id="syncTitle">数据同步</b>
+        <span id="syncMeta">正在读取同步状态…</span>
+      </div>
+      <button class="sync-btn" id="btnSync" type="button">
+        <span class="sync-dot"></span><span id="syncBtnText">同步最新数据</span>
+      </button>
+    </section>
+
+    <section class="panel filter-panel">
+      <div class="panel-head">
+        <h2>指数范围</h2>
+        <button class="text-btn" id="btnReset">重置</button>
+      </div>
+      <div class="pill-row" id="regionPills"></div>
+      <div class="subhead-row">
+        <span class="subhead">指数 / 主题</span>
+        <span class="subhead-note" id="themeNote"></span>
+      </div>
+      <div class="chips" id="themeChips"></div>
+      <div class="search-row">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4 4"/></svg>
+        <input id="searchInput" type="search" inputmode="search" placeholder="搜索基金代码、简称或指数" autocomplete="off" aria-label="搜索基金">
+        <button class="clear-search" id="clearSearch" aria-label="清空搜索" hidden>×</button>
+      </div>
+    </section>
+
+    <section class="panel metric-panel">
+      <div class="tabs" id="tabs" role="tablist" aria-label="指标切换"></div>
+      <div class="range-block">
+        <div class="range-head">
+          <span class="section-label">历史位置区间</span>
+          <span class="range-count" id="rangeCount"></span>
+        </div>
+        <div class="range-pills" id="rangePills"></div>
+        <p class="hint" id="rangeHint">历史位置表示当前溢价在该区间历史样本中的百分位排名。点击表头排序，空值始终置底。</p>
+      </div>
+    </section>
+
+    <section class="list-card">
+      <div class="list-meta">
+        <span id="listSummary">正在加载数据…</span>
+        <span class="list-legend"><i class="legend-dot"></i>溢价率 = 收盘价 / 官方净值 − 1</span>
+      </div>
+      <div class="table-wrap">
+        <table class="etf-table" id="etfTable">
+          <thead>
+            <tr>
+              <th class="col-check"><input type="checkbox" id="checkAll" aria-label="全选"></th>
+              <th class="col-name" data-sort="name">基金简称</th>
+              <th class="col-code" data-sort="code">代码<span class="sort-ind" id="sortCode"></span></th>
+              <th class="col-index">指数 / 主题</th>
+              <th class="col-metric" id="metricHead" data-sort="premium">溢价率</th>
+              <th class="col-extra col-pos">历史位置</th>
+              <th class="col-extra col-amount">成交额</th>
+              <th class="col-extra col-scale">规模</th>
+            </tr>
+          </thead>
+          <tbody id="etfBody"></tbody>
+        </table>
+        <div class="empty" id="emptyState" hidden>
+          <div class="empty-mark">⌕</div>
+          <p>没有符合条件的 ETF</p>
+          <span>试试切换指数范围，或清空搜索关键词</span>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel coverage-panel" id="coverageCard">
+      <div class="panel-head">
+        <h2>数据覆盖与缺口</h2>
+        <div class="cov-head-right">
+          <span class="cov-badge" id="coverageBadge">统计中…</span>
+          <button class="text-btn" id="coverageToggle" aria-expanded="false">查看明细</button>
+        </div>
+      </div>
+      <div class="cov-grid" id="coverageStats"></div>
+      <p class="cov-reason" id="coverageReason">覆盖率按库内真实记录统计，未用推测值填充。</p>
+      <div class="cov-detail" id="coverageDetail" hidden></div>
+    </section>
+
+    <footer class="foot">
+      <div class="foot-line"></div>
+      <p>数据来源：东方财富公开行情接口、基金档案与官方单位净值。历史溢价按收盘价与当日官方净值计算，仅用于研究与信息参考，不构成任何投资建议。</p>
+      <p class="foot-meta"><span id="footUpdated"></span><span>·</span><span>本地 SQLite 存储</span><span>·</span><span>采集脚本可复现</span></p>
+    </footer>
+  </section>
+
+  <!-- 详情视图 -->
+  <section id="view-detail" class="view" hidden></section>
+
+  <!-- 对比视图 -->
+  <section id="view-compare" class="view" hidden></section>
+</main>
+
+<!-- 对比悬浮栏 -->
+<div class="compare-bar" id="compareBar" hidden>
+  <div class="compare-chips" id="compareChips"></div>
+  <div class="compare-actions">
+    <button class="text-btn" id="clearSel">清空</button>
+    <button class="primary-btn" id="goCompare">对比 <span id="selCount">0</span></button>
+  </div>
+</div>
+
+<!-- 弹层 -->
+<div class="modal" id="modal" hidden>
+  <div class="modal-mask" data-close></div>
+  <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <h3 id="modalTitle">数据说明</h3>
+      <button class="icon-btn" data-close aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+<div class="loading-line" id="loadingLine"></div>
+
+<script src="assets/v-20261106q/charts.js"></script>
+<script src="assets/v-20261106q/app.js"></script>
+<noscript><p style="padding:24px">请启用 JavaScript 以查看溢价数据。</p></noscript>
+</body>
+</html>
