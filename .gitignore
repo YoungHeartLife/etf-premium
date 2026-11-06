@@ -1,0 +1,7 @@
+# 数据库与运行时产物：数据不进 Git，首次部署单独传输或在服务器首次采集
+data/
+.env
+*.log
+__pycache__/
+*.pyc
+.DS_Store

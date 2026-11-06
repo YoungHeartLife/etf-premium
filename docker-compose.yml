@@ -1,0 +1,39 @@
+x-app: &app
+  build: .
+  image: etf-premium:latest
+  environment:
+    ETF_HOST: 0.0.0.0
+    ETF_DB_PATH: /data/etf_premium.db
+    ETF_TZ: ${ETF_TZ:-Asia/Shanghai}
+  volumes:
+    - ./data:/data
+  restart: unless-stopped
+
+services:
+  web:
+    <<: *app
+    command: ["python3", "run.py"]
+    ports:
+      - "${ETF_PORT:-8787}:8787"
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import sys,urllib.request;sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8787/api/health',timeout=3).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      start_period: 300s
+      retries: 3
+
+  collector:
+    <<: *app
+    command: ["python3", "scheduler.py"]
+    depends_on:
+      - web
+    environment:
+      ETF_HOST: 0.0.0.0
+      ETF_DB_PATH: /data/etf_premium.db
+      ETF_TZ: ${ETF_TZ:-Asia/Shanghai}
+      ETF_LOG_FILE: /data/collect.log
+      ETF_COLLECT_AT: ${ETF_COLLECT_AT:-18:10}
+      ETF_COLLECT_INTERVAL_MINUTES: ${ETF_COLLECT_INTERVAL_MINUTES:-1440}
+      ETF_COLLECT_ON_START: ${ETF_COLLECT_ON_START:-1}
+      ETF_COLLECT_WEEKDAYS_ONLY: ${ETF_COLLECT_WEEKDAYS_ONLY:-1}
+      ETF_COLLECT_RETRIES: ${ETF_COLLECT_RETRIES:-3}

@@ -1,0 +1,13 @@
+[Unit]
+Description=溢价日 · 跨境 ETF 增量采集（单次）
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=etf
+Group=etf
+WorkingDirectory=/opt/etf-premium
+EnvironmentFile=/etc/etf-premium/env
+ExecStart=/usr/bin/python3 /opt/etf-premium/scheduler.py --once
+TimeoutStartSec=1800

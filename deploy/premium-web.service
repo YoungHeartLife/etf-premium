@@ -1,0 +1,17 @@
+[Unit]
+Description=溢价日 · 跨境 ETF 溢价监测 Web 服务
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=etf
+Group=etf
+WorkingDirectory=/opt/etf-premium
+EnvironmentFile=/etc/etf-premium/env
+ExecStart=/usr/bin/python3 /opt/etf-premium/server.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

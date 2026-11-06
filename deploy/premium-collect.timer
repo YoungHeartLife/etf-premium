@@ -1,0 +1,10 @@
+[Unit]
+Description=溢价日 · 每个交易日 18:10 增量采集
+
+[Timer]
+OnCalendar=Mon-Fri 18:10:00
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+data/
+__pycache__/
+*.pyc
+.git/
+.github/
+.venv/
+venv/
+*.png
+*.jpg
+*.log
+.DS_Store
