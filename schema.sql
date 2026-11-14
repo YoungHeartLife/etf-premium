@@ -105,3 +105,39 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- ------------------------------------------------------------------ 用户
+
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    email         TEXT NOT NULL UNIQUE,          -- 统一小写存储，用于登录与唯一性
+    nickname      TEXT NOT NULL,
+    password_hash TEXT NOT NULL,                 -- pbkdf2_sha256$<iterations>$<salt>$<hash>
+    phone         TEXT,
+    status        TEXT NOT NULL DEFAULT 'active',-- active / disabled
+    created_at    TEXT NOT NULL,
+    updated_at    TEXT NOT NULL,
+    last_login_at TEXT
+);
+
+-- 登录态存服务端，浏览器只持有随机会话令牌；库里只存令牌的 SHA-256
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_seen  TEXT,
+    user_agent TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions (user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions (expires_at);
+
+-- 登录失败记录：用于同一账号的短时锁定
+CREATE TABLE IF NOT EXISTS login_attempts (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    account    TEXT NOT NULL,
+    ip         TEXT,
+    ok         INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_attempts_account ON login_attempts (account, created_at);

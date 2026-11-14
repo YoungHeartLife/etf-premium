@@ -9,7 +9,7 @@
 <script>
 /* 构建版本变更时自动整页刷新，避免旧标签页拿着内存里的旧 JS 渲染出不一致的页面 */
 (function () {
-  var BUILD = "20261106q";
+  var BUILD = "20261114b";
   try {
     if (localStorage.pmBuild && localStorage.pmBuild !== BUILD) {
       localStorage.pmBuild = BUILD;
@@ -20,7 +20,7 @@
   } catch (e) { /* 隐私模式下忽略 */ }
 })();
 </script>
-<link rel="stylesheet" href="assets/v-20261106q/app.css">
+<link rel="stylesheet" href="assets/v-20261114b/app.css">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='16' fill='%230E4A38'/%3E%3Ctext x='32' y='45' font-size='36' text-anchor='middle' fill='%23F4E7C8' font-family='sans-serif'%3E溢%3C/text%3E%3C/svg%3E">
 </head>
 <body>
@@ -41,6 +41,9 @@
         <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v4h-4"/></svg>
       </button>
       <button class="ghost-btn" id="btnAbout">数据说明</button>
+      <div class="user-slot" id="userSlot">
+        <button class="ghost-btn auth-btn" id="btnLogin">登录 / 注册</button>
+      </div>
     </div>
   </div>
 </header>
@@ -197,8 +200,8 @@
 <div class="toast" id="toast" hidden></div>
 <div class="loading-line" id="loadingLine"></div>
 
-<script src="assets/v-20261106q/charts.js"></script>
-<script src="assets/v-20261106q/app.js"></script>
+<script src="assets/v-20261114b/charts.js"></script>
+<script src="assets/v-20261114b/app.js"></script>
 <noscript><p style="padding:24px">请启用 JavaScript 以查看溢价数据。</p></noscript>
 </body>
 </html>

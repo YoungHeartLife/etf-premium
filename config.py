@@ -47,6 +47,13 @@ SYNC_TIMEOUT = _int("ETF_SYNC_TIMEOUT", 1800)
 # ---- 日志 ----
 LOG_FILE = _env("ETF_LOG_FILE", "")     # 留空则只输出到 stdout
 
+# ---- 用户与登录态 ----
+SESSION_COOKIE = _env("ETF_SESSION_COOKIE", "etf_session")
+SESSION_DAYS = _int("ETF_SESSION_DAYS", 7)                 # 登录态有效期（天）
+PBKDF2_ITERATIONS = _int("ETF_PBKDF2_ITERATIONS", 210000)  # 密码哈希迭代次数
+LOGIN_MAX_FAILS = _int("ETF_LOGIN_MAX_FAILS", 5)           # 连续失败多少次后锁定
+LOGIN_LOCK_MINUTES = _int("ETF_LOGIN_LOCK_MINUTES", 15)    # 锁定时长（分钟）
+
 # ---- 采集口径 ----
 HISTORY_START = _env("ETF_HISTORY_START", (date.today() - timedelta(days=1095)).strftime("%Y%m%d"))
 USER_AGENT = _env(

@@ -61,16 +61,32 @@
   // 直接双击打开 index.html 时，静态资源相对加载，接口指向本机服务
   const API_BASE = location.protocol === "file:" ? "http://127.0.0.1:8787" : "";
 
-  async function api(path) {
+  async function api(path, opts) {
+    const o = opts || {};
+    const headers = { Accept: "application/json" };
+    const init = { method: o.method || "GET", headers, credentials: "same-origin" };
+    if (o.body !== undefined) {
+      headers["Content-Type"] = "application/json";
+      init.body = JSON.stringify(o.body);
+    }
+    // 直接双击 index.html（file://）时 Cookie 是第三方 Cookie 可能被拦，改由服务端令牌兜底
+    if (location.protocol === "file:") {
+      init.credentials = "include";
+      if (AUTH.token) headers["Authorization"] = "Bearer " + AUTH.token;
+    }
     let res;
     try {
-      res = await fetch(API_BASE + path, { headers: { Accept: "application/json" } });
+      res = await fetch(API_BASE + path, init);
     } catch (e) {
       throw new Error("无法连接本地服务，请先运行 python3 server.py --port 8787");
     }
     let data = null;
     try { data = await res.json(); } catch (e) { data = null; }
-    if (!res.ok) throw new Error((data && data.error) || ("HTTP " + res.status));
+    if (!res.ok) {
+      const err = new Error((data && data.error) || ("HTTP " + res.status));
+      err.status = res.status;
+      throw err;
+    }
     return data;
   }
 
@@ -645,6 +661,7 @@
             <p>折线为日度收盘溢价，浅色区间为样本 20–80 分位带。悬停查看每日收盘价与净值。</p>
           </div>
         </div>
+        <div id="freeNotice"></div>
         <div class="detail-range-row">${detailRangePills()}</div>
         <div class="chart-shell" id="detailChart"></div>
       </section>
@@ -775,14 +792,42 @@
     loadHistory(d.profile.code);
   }
 
+  function freeNotice(d) {
+    if (!d.access || d.access.full) return "";
+    return `<div class="free-notice">
+      <b>当前为未登录状态</b>
+      <span>仅展示近 ${FREE_DAYS} 天数据，近三月及以上区间、历史查询与 CSV 导出需登录后使用。</span>
+      <button class="text-btn" id="freeLogin">登录 / 注册</button>
+    </div>`;
+  }
+
   function renderDetailContent(d) {
+    const notice = $("#freeNotice");
+    if (notice) {
+      notice.innerHTML = freeNotice(d);
+      const btn = $("#freeLogin");
+      if (btn) btn.addEventListener("click", () => authModal("login"));
+    }
     const chartEl = $("#detailChart");
     if (chartEl) renderDetailChart(d);
     const liq = $("#liqChart");
     if (liq) window.Charts.amountChart(liq, d.liquidity.series, { height: 110 });
   }
 
+  const FREE_DAYS = 30;
+
+  // 未登录且所选区间超出免费范围（近 30 天）时，弹登录而不是静默展示空图
+  function rangeLocked(d, range) {
+    if (!d.access || d.access.full) return false;
+    return DAYS[range] === undefined || DAYS[range] > FREE_DAYS;
+  }
+
   function setDetailRange(d, range) {
+    if (rangeLocked(d, range)) {
+      authModal("login");
+      toast("该区间需要登录后查看");
+      return;
+    }
     S.detailRange = range;
     $$("[data-dr]").forEach(b => b.classList.toggle("active", b.dataset.dr === range));
     const pos = $("#posCard");
@@ -802,6 +847,11 @@
   }
 
   async function loadHistory(code) {
+    if (!AUTH.user) {
+      authModal("login");
+      toast("历史查询需要登录后使用");
+      return;
+    }
     const from = $("#fromDate").value;
     const to = $("#toDate").value;
     if (!from || !to) { toast("请选择完整的日期范围"); return; }
@@ -977,6 +1027,210 @@
     if (btn) btn.addEventListener("click", () => copyText("CodeTester"));
   }
 
+  /* ------------------------------------------------------------ 账号 */
+
+  // AUTH.token 只在 file:// 模式下使用（Cookie 不可用时由服务端读取 Bearer 令牌）
+  const AUTH = { user: null, token: null };
+
+  function saveToken(token) {
+    AUTH.token = token || null;
+    try {
+      if (token) localStorage.setItem("pmToken", token);
+      else localStorage.removeItem("pmToken");
+    } catch (e) { /* 隐私模式 */ }
+  }
+  try { AUTH.token = localStorage.getItem("pmToken") || null; } catch (e) { AUTH.token = null; }
+
+  function paintUser() {
+    const slot = $("#userSlot");
+    const u = AUTH.user;
+    if (!u) {
+      slot.innerHTML = '<button class="ghost-btn auth-btn" id="btnLogin">登录 / 注册</button>';
+      $("#btnLogin").addEventListener("click", () => authModal("login"));
+      return;
+    }
+    slot.innerHTML = `
+      <button class="user-chip" id="btnUser" aria-haspopup="menu" aria-expanded="false"
+              title="${esc(u.email)}">
+        <span class="avatar">${esc((u.nickname || "用").slice(0, 1))}</span>
+        <span class="user-name">${esc(u.nickname || u.email)}</span>
+      </button>
+      <div class="user-menu" id="userMenu" role="menu" hidden>
+        <div class="user-menu-head">
+          <b>${esc(u.nickname || "用户")}</b>
+          <span>${esc(u.email)}</span>
+        </div>
+        <button class="menu-item" id="menuPassword" role="menuitem">修改密码</button>
+        <button class="menu-item danger" id="menuLogout" role="menuitem">退出登录</button>
+      </div>`;
+    const chip = $("#btnUser");
+    const menu = $("#userMenu");
+    chip.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const open = menu.hidden;
+      menu.hidden = !open;
+      chip.setAttribute("aria-expanded", open ? "true" : "false");
+    });
+    $("#menuPassword").addEventListener("click", () => { menu.hidden = true; passwordModal(); });
+    $("#menuLogout").addEventListener("click", logout);
+  }
+
+  async function loadMe() {
+    try {
+      const data = await api("/api/auth/me");
+      AUTH.user = data.user || null;
+    } catch (e) {
+      AUTH.user = null;
+    }
+    paintUser();
+  }
+
+  async function logout() {
+    try { await api("/api/auth/logout", { method: "POST", body: {} }); } catch (e) { /* 已失效也继续清理本地态 */ }
+    saveToken(null);
+    AUTH.user = null;
+    paintUser();
+    toast("已退出登录");
+  }
+
+  function authErr(msg) {
+    const box = $("#authError");
+    if (!box) { toast(msg); return; }
+    box.textContent = msg;
+    box.hidden = !msg;
+  }
+
+  function bindAuthForm(mode) {
+    const form = $("#authForm");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      authErr("");
+      const body = {
+        email: form.elements.email.value.trim(),
+        password: form.elements.password.value,
+      };
+      if (mode === "register") {
+        body.nickname = form.elements.nickname.value.trim();
+        body.password2 = form.elements.password2.value;
+      }
+      const btn = $("#authSubmit");
+      btn.disabled = true;
+      btn.textContent = mode === "register" ? "注册中…" : "登录中…";
+      try {
+        const data = await api("/api/auth/" + (mode === "register" ? "register" : "login"),
+          { method: "POST", body });
+        saveToken(data.token || null);
+        AUTH.user = data.user;
+        paintUser();
+        closeModal();
+        toast(mode === "register" ? "注册成功，已自动登录" : "欢迎回来，" + (AUTH.user.nickname || ""));
+        // 登录态可能改变可用数据范围，刷新当前视图
+        S.overview = null;
+        if (S.route === "detail" && S.detail) showDetail(S.detail.profile.code);
+        else if (S.route === "compare") route();
+        else showHome();
+      } catch (err) {
+        authErr(err.message || "操作失败，请稍后重试");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = mode === "register" ? "注册并登录" : "登录";
+      }
+    });
+  }
+
+  function authModal(mode) {
+    const isReg = mode === "register";
+    showModal(isReg ? "注册账号" : "登录", `
+      <p class="auth-lead">${isReg
+        ? "填写邮箱与密码即可完成注册，无需验证码，注册后自动登录。"
+        : "使用注册时的邮箱和密码登录。"}</p>
+      <form class="auth-form" id="authForm" novalidate>
+        ${isReg ? `
+        <div class="field">
+          <label for="authNickname">昵称（选填）</label>
+          <input id="authNickname" name="nickname" maxlength="20" autocomplete="nickname"
+                 placeholder="不填则使用邮箱前缀">
+        </div>` : ""}
+        <div class="field">
+          <label for="authEmail">邮箱</label>
+          <input id="authEmail" name="email" type="email" required autocomplete="email"
+                 placeholder="you@example.com" autocapitalize="off" spellcheck="false">
+        </div>
+        <div class="field">
+          <label for="authPassword">密码</label>
+          <input id="authPassword" name="password" type="password" required
+                 autocomplete="${isReg ? "new-password" : "current-password"}"
+                 placeholder="${isReg ? "至少 8 位，字母与数字/符号组合" : "请输入密码"}">
+        </div>
+        ${isReg ? `
+        <div class="field">
+          <label for="authPassword2">确认密码</label>
+          <input id="authPassword2" name="password2" type="password" required
+                 autocomplete="new-password" placeholder="再次输入密码">
+        </div>` : ""}
+        <p class="auth-error" id="authError" hidden role="alert"></p>
+        <button class="primary-btn auth-submit" id="authSubmit" type="submit">
+          ${isReg ? "注册并登录" : "登录"}
+        </button>
+      </form>
+      <p class="auth-switch">
+        ${isReg ? "已有账号？" : "还没有账号？"}
+        <button class="text-btn" id="authSwitch">${isReg ? "直接登录" : "免费注册"}</button>
+      </p>
+      <p class="auth-note">登录态保存在本机浏览器，有效期 7 天；同一账号连续输错 5 次密码将锁定 15 分钟。</p>
+    `);
+    bindAuthForm(mode);
+    $("#authSwitch").addEventListener("click", () => authModal(isReg ? "login" : "register"));
+    const first = isReg ? $("#authNickname") : $("#authEmail");
+    if (first) setTimeout(() => first.focus(), 60);
+  }
+
+  function passwordModal() {
+    showModal("修改密码", `
+      <p class="auth-lead">修改后其他设备上的登录会自动退出。</p>
+      <form class="auth-form" id="authForm" novalidate>
+        <div class="field">
+          <label for="oldPassword">当前密码</label>
+          <input id="oldPassword" name="old_password" type="password" required autocomplete="current-password">
+        </div>
+        <div class="field">
+          <label for="newPassword">新密码</label>
+          <input id="newPassword" name="new_password" type="password" required autocomplete="new-password"
+                 placeholder="至少 8 位，字母与数字/符号组合">
+        </div>
+        <div class="field">
+          <label for="newPassword2">确认新密码</label>
+          <input id="newPassword2" name="new_password2" type="password" required autocomplete="new-password">
+        </div>
+        <p class="auth-error" id="authError" hidden role="alert"></p>
+        <button class="primary-btn auth-submit" id="authSubmit" type="submit">保存新密码</button>
+      </form>
+    `);
+    const form = $("#authForm");
+    form.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      authErr("");
+      const pw = form.elements.new_password.value;
+      if (pw !== form.elements.new_password2.value) {
+        authErr("两次输入的新密码不一致");
+        return;
+      }
+      const btn = $("#authSubmit");
+      btn.disabled = true;
+      try {
+        const data = await api("/api/auth/password", {
+          method: "POST",
+          body: { old_password: form.elements.old_password.value, new_password: pw },
+        });
+        closeModal();
+        toast(data.message || "密码已更新");
+      } catch (err) {
+        authErr(err.message || "修改失败");
+      } finally { btn.disabled = false; }
+    });
+    setTimeout(() => $("#oldPassword").focus(), 60);
+  }
+
   /* ------------------------------------------------------------ 路由 */
 
   function route() {
@@ -990,6 +1244,7 @@
   /* ------------------------------------------------------------ 事件 */
 
   $("#btnAbout").addEventListener("click", aboutModal);
+  $("#btnLogin").addEventListener("click", () => authModal("login"));
   $("#btnService").addEventListener("click", serviceModal);
   $("#btnRefresh").addEventListener("click", () => {
     S.overview = null;
@@ -1177,6 +1432,14 @@
   $("#modal").addEventListener("click", (e) => {
     if (e.target.closest("[data-close]")) closeModal();
   });
+  document.addEventListener("click", (e) => {
+    const menu = $("#userMenu");
+    if (menu && !menu.hidden && !e.target.closest("#userSlot")) {
+      menu.hidden = true;
+      const chip = $("#btnUser");
+      if (chip) chip.setAttribute("aria-expanded", "false");
+    }
+  });
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") closeModal();
   });
@@ -1197,5 +1460,6 @@
 
   window.addEventListener("hashchange", route);
   checkSync();
+  loadMe();
   route();
 })();

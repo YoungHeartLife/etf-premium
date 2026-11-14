@@ -23,6 +23,7 @@ from urllib.parse import parse_qs, urlparse
 import subprocess
 import sys
 
+import auth
 from config import (APP_HOST, APP_PORT, BASE_DIR as CONFIG_BASE, DB_PATH,
                     CN_TZ, SYNC_TIMEOUT, LOG_FILE)
 
@@ -175,10 +176,40 @@ def run_sync_job() -> None:
             })
 
 
+AUTH_SCHEMA_READY = False
+
+
 def conn() -> sqlite3.Connection:
+    global AUTH_SCHEMA_READY
     c = sqlite3.connect(DB_PATH, timeout=30)
     c.row_factory = sqlite3.Row
+    if not AUTH_SCHEMA_READY:
+        # 旧库只跑过数据表，这里补齐用户 / 会话 / 登录记录表（IF NOT EXISTS，幂等）
+        try:
+            auth.ensure_schema(c)
+            AUTH_SCHEMA_READY = True
+        except sqlite3.Error:
+            pass  # 建表失败不阻断只读行情接口，登录接口会返回明确错误
     return c
+
+
+def current_user(c: sqlite3.Connection, handler) -> sqlite3.Row | None:
+    """当前浏览器是否已登录；登录后解锁完整区间、历史查询与 CSV 导出。"""
+    return auth.user_for_token(c, handler._session_token())
+
+
+# 未登录时，详情页只保留近 N 天的溢价序列
+FREE_DETAIL_DAYS = 30
+
+
+def trim_series_for_free(series: list[dict]) -> list[dict]:
+    """未登录：按最新交易日往回裁剪，只留下近 FREE_DETAIL_DAYS 天。"""
+    if not series:
+        return series
+    latest = series[-1]["date"]
+    y, m, d = (int(x) for x in latest.split("-"))
+    cutoff = (datetime(y, m, d) - timedelta(days=FREE_DETAIL_DAYS)).strftime("%Y-%m-%d")
+    return [p for p in series if p["date"] > cutoff]
 
 
 def qs_str(params: dict, key: str, default: str = "") -> str:
@@ -501,7 +532,7 @@ def api_list(c: sqlite3.Connection, params: dict) -> dict:
     }
 
 
-def api_detail(c: sqlite3.Connection, code: str, rng: str) -> dict | None:
+def api_detail(c: sqlite3.Connection, code: str, rng: str, full: bool = True) -> dict | None:
     row = c.execute("SELECT * FROM etf WHERE code=?", (code,)).fetchone()
     if not row:
         return None
@@ -524,6 +555,10 @@ def api_detail(c: sqlite3.Connection, code: str, rng: str) -> dict | None:
     shares = sn.get("shares")
     scale = (shares * latest_nav["unit_nav"] / 1e8) if (shares and latest_nav) else (
         f.get("quarter_scale") / 1e8 if f.get("quarter_scale") else None)
+    if not full:
+        # 未登录：只保留近 30 天。stats 与 all_time 都在裁剪后的序列上计算，
+        # 避免「图表只有 30 天、区间高低却按全历史算」的口径矛盾。
+        s = trim_series_for_free(s)
     row_for_stats = {"_series": s, "daily_date": s[-1]["date"] if s else (latest_nav["trade_date"] if latest_nav else "")}
     stats = {r: slice_stats(row_for_stats, r) for r in RANGES}
     lo = min(s, key=lambda p: p["premium"]) if s else None
@@ -593,10 +628,11 @@ def api_detail(c: sqlite3.Connection, code: str, rng: str) -> dict | None:
         },
         "peers": peers,
         "range": rng, "range_label": RANGE_LABEL.get(rng, "近一月"),
+        "access": {"full": full, "free_days": FREE_DETAIL_DAYS},
     }
 
 
-def api_history(c: sqlite3.Connection, params: dict) -> dict:
+def api_history(c: sqlite3.Connection, params: dict, full: bool = True) -> dict:
     code = qs_str(params, "code", "")
     if not code:
         raise ValueError("code required")
@@ -607,6 +643,10 @@ def api_history(c: sqlite3.Connection, params: dict) -> dict:
     default_from = (now_cn() - timedelta(days=90)).strftime("%Y-%m-%d")
     start = qs_str(params, "from", "") or default_from
     limit = min(int(qs_str(params, "limit", "600") or 600), 2000)
+    if not full:
+        # 未登录：只允许查询近 30 天，起点被强制前移，避免传个早期 from 就绕过
+        free_start = (datetime.strptime(today, "%Y-%m-%d") - timedelta(days=FREE_DETAIL_DAYS)).strftime("%Y-%m-%d")
+        start = max(start, free_start)
     rows = c.execute(
         """SELECT p.trade_date, p.close, p.nav, p.premium_pct, p.suspect, q.amount
            FROM premium_daily p LEFT JOIN quote_daily q ON q.code=p.code AND q.trade_date=p.trade_date
@@ -634,6 +674,7 @@ def api_history(c: sqlite3.Connection, params: dict) -> dict:
             "samples": len(values),
         },
         "methodology": "收盘价与当日官方单位净值计算的日度溢价率；百分位为该记录在所选区间样本中的排名。",
+        "access": {"full": full, "free_days": FREE_DETAIL_DAYS},
     }
 
 
@@ -842,13 +883,28 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
-    def _json(self, payload, status=200):
+    def _cors(self):
+        """本地同时用两种方式打开页面：http(s)://host 同源访问，或直接双击 index.html（file://）。
+
+        - 同源：Origin 与 Host 一致，无需 CORS；
+        - file://：Origin 为 null，必须回显 Origin 且允许携带 Cookie，否则登录态无法保持。
+        不使用 `*`，因为带凭证的请求不允许通配符。
+        """
+        origin = self.headers.get("Origin")
+        if origin and origin != f"http://{self.headers.get('Host', '')}":
+            self.send_header("Access-Control-Allow-Origin", origin)
+            self.send_header("Access-Control-Allow-Credentials", "true")
+            self.send_header("Vary", "Origin")
+
+    def _json(self, payload, status=200, headers: list[tuple[str, str]] | None = None):
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
+        for name, value in headers or []:
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
@@ -872,6 +928,90 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    # ---- 登录态 ----
+
+    def _session_token(self) -> str | None:
+        token = auth.token_from_cookie(self.headers.get("Cookie"))
+        if token:
+            return token
+        # 直接双击 index.html 时（file://）Cookie 是第三方 Cookie，部分浏览器会拦截；
+        # 此时仅允许本机服务读取前端放在 Authorization: Bearer 里的令牌，作为调试兜底。
+        if self.client_address[0] in ("127.0.0.1", "::1") and APP_HOST in ("127.0.0.1", "localhost"):
+            scheme, _, value = (self.headers.get("Authorization") or "").partition(" ")
+            if scheme.lower() == "bearer" and value.strip():
+                return value.strip()
+        return None
+
+    def _read_json(self) -> dict:
+        try:
+            length = int(self.headers.get("Content-Length") or 0)
+        except ValueError:
+            length = 0
+        if length <= 0:
+            return {}
+        if length > 64 * 1024:
+            raise ValueError("请求体过大")
+        raw = self.rfile.read(length)
+        try:
+            data = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            raise ValueError("请求格式不正确") from None
+        if not isinstance(data, dict):
+            raise ValueError("请求格式不正确")
+        return data
+
+    def _auth_api(self, path: str):
+        """返回 True 表示已处理该请求。"""
+        if not path.startswith("/api/auth/"):
+            return False
+        action = path[len("/api/auth/"):]
+        ip = self.client_address[0]
+        ua = self.headers.get("User-Agent") or ""
+        if action == "me" and self.command == "GET":
+            with DB_LOCK:
+                c = conn()
+                try:
+                    token = self._session_token()
+                    user = auth.user_for_token(c, token)
+                    if user:
+                        auth.touch_session(c, token)
+                    return self._json({"user": auth.public_user(user) if user else None,
+                                       "authenticated": bool(user)})
+                finally:
+                    c.close()
+        if self.command != "POST":
+            return self._json({"error": "not found"}, 404)
+        try:
+            payload = self._read_json()
+        except ValueError as exc:
+            return self._json({"error": str(exc)}, 400)
+        with DB_LOCK:
+            c = conn()
+            try:
+                if action == "register":
+                    res = auth.register(c, payload, ip, ua)
+                    return self._json({"user": res["user"], "token": res["token"]}, 201,
+                                      [("Set-Cookie", auth.make_cookie(res["token"]))])
+                if action == "login":
+                    res = auth.login(c, payload, ip, ua)
+                    return self._json({"user": res["user"], "token": res["token"]}, 200,
+                                      [("Set-Cookie", auth.make_cookie(res["token"]))])
+                if action == "logout":
+                    auth.destroy_session(c, self._session_token())
+                    return self._json({"ok": True}, 200, [("Set-Cookie", auth.clear_cookie())])
+                if action == "password":
+                    token = self._session_token()
+                    user = auth.user_for_token(c, token)
+                    if not user:
+                        return self._json({"error": "请先登录"}, 401)
+                    auth.change_password(c, user, payload, token)
+                    return self._json({"ok": True, "message": "密码已更新，其他设备的登录已退出"})
+                return self._json({"error": "not found"}, 404)
+            except auth.AuthError as exc:
+                return self._json({"error": str(exc)}, 400)
+            finally:
+                c.close()
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -889,6 +1029,11 @@ class Handler(BaseHTTPRequestHandler):
 
         if not path.startswith("/api/"):
             return self._json({"error": "not found"}, 404)
+        try:
+            if self._auth_api(path):
+                return None
+        except Exception as exc:  # noqa: BLE001
+            return self._json({"error": repr(exc)}, 500)
 
         try:
             with DB_LOCK:
@@ -898,15 +1043,18 @@ class Handler(BaseHTTPRequestHandler):
                         return self._json(api_overview(c))
                     if path == "/api/etfs":
                         return self._json(api_list(c, params))
+                    full = current_user(c, self) is not None
                     if path.startswith("/api/etf/"):
                         code = path.split("/")[-1]
-                        data = api_detail(c, code, qs_str(params, "range", "1m"))
+                        data = api_detail(c, code, qs_str(params, "range", "1m"), full=full)
                         if not data:
                             return self._json({"error": "fund not found"}, 404)
                         return self._json(data)
                     if path == "/api/history":
-                        return self._json(api_history(c, params))
+                        return self._json(api_history(c, params, full=full))
                     if path == "/api/history.csv":
+                        if not full:
+                            return self._json({"error": "导出功能需要登录后使用"}, 401)
                         return self._csv(c, params)
                     if path == "/api/coverage":
                         return self._json(api_coverage(c))
@@ -926,6 +1074,11 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = urlparse(self.path).path
+        try:
+            if self._auth_api(path):
+                return None
+        except Exception as exc:  # noqa: BLE001
+            return self._json({"error": repr(exc)}, 500)
         if path == "/api/sync":
             ok, payload = start_sync()
             return self._json(payload, 202 if ok else 409)
@@ -933,9 +1086,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_OPTIONS(self):
         self.send_response(204)
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Accept, Authorization")
         self.end_headers()
 
     def _csv(self, c, params):
@@ -951,7 +1104,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Disposition",
                          f'attachment; filename="{data["code"]}_premium_{data["from"]}_{data["to"]}.csv"')
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Access-Control-Allow-Origin", "*")
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
